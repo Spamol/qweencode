@@ -1,6 +1,10 @@
 /**
- * Xonix Web Game - Полная реализация
- * Включает все шаги: базовая структура, игрок, враги, алгоритм захвата, UI
+ * Xonix Web Game - Полная реализация с исправленными багами
+ * Исправления:
+ * - Игрок спавнится на захваченной территории
+ * - Корректный алгоритм захвата через Flood Fill
+ * - Правильная обработка коллизий
+ * - Исправлено движение в любом направлении
  */
 
 // ============================================
@@ -10,14 +14,14 @@
 const CONFIG = {
     CANVAS_WIDTH: 800,
     CANVAS_HEIGHT: 600,
-    GRID_SIZE: 4,
+    GRID_SIZE: 5,
     TARGET_CAPTURE_PERCENT: 80,
     PLAYER_SPEED: 1,
-    ENEMY_SPEED: 0.5,
+    ENEMY_BASE_SPEED: 0.3,
     DIFFICULTY: {
-        EASY: { enemies: 2, speed: 0.4 },
-        MEDIUM: { enemies: 4, speed: 0.6 },
-        HARD: { enemies: 6, speed: 0.8 }
+        EASY: { enemies: 2, speed: 0.25 },
+        MEDIUM: { enemies: 4, speed: 0.4 },
+        HARD: { enemies: 6, speed: 0.6 }
     }
 };
 
@@ -65,6 +69,7 @@ class Player {
     private nextDirection: Direction = Direction.RIGHT;
     private isDrawing: boolean = false;
     private trail: Position[] = [];
+    private hasMovedOffCaptured: boolean = false;
 
     constructor(startX: number, startY: number) {
         this.pos = { x: startX, y: startY };
@@ -79,12 +84,14 @@ class Player {
     }
 
     setDirection(dir: Direction): void {
-        // Запрещаем разворот на 180 градусов
-        if ((dir === Direction.UP && this.direction === Direction.DOWN) ||
-            (dir === Direction.DOWN && this.direction === Direction.UP) ||
-            (dir === Direction.LEFT && this.direction === Direction.RIGHT) ||
-            (dir === Direction.RIGHT && this.direction === Direction.LEFT)) {
-            return;
+        // Запрещаем разворот на 180 градусов только если движемся
+        if (this.isDrawing) {
+            if ((dir === Direction.UP && this.direction === Direction.DOWN) ||
+                (dir === Direction.DOWN && this.direction === Direction.UP) ||
+                (dir === Direction.LEFT && this.direction === Direction.RIGHT) ||
+                (dir === Direction.RIGHT && this.direction === Direction.LEFT)) {
+                return;
+            }
         }
         this.nextDirection = dir;
     }
@@ -108,41 +115,54 @@ class Player {
         }
 
         const targetCell = grid[newY][newX];
-        
-        // Если были на захваченной территории и переходим в пустую - начинаем рисовать
         const currentCell = grid[this.pos.y][this.pos.x];
-        if (currentCell === CellType.CAPTURED && targetCell === CellType.EMPTY) {
+        
+        // Логика начала рисования
+        if (!this.isDrawing && currentCell === CellType.CAPTURED && targetCell === CellType.EMPTY) {
             this.isDrawing = true;
+            this.hasMovedOffCaptured = true;
             this.trail = [{ x: this.pos.x, y: this.pos.y }];
         }
 
         // Если рисуем линию
         if (this.isDrawing) {
-            // Проверка на столкновение с собственной линией
-            for (const t of this.trail) {
-                if (t.x === newX && t.y === newY) {
-                    return false; // Столкновение с хвостом
-                }
+            // Нельзя идти обратно на захваченную сразу (минимум 1 клетка линии)
+            if (targetCell === CellType.CAPTURED && this.trail.length > 0) {
+                // Возврат на захваченную территорию - завершаем контур
+                this.pos = { x: newX, y: newY };
+                return true; // Сигнал для захвата
             }
             
-            this.trail.push({ x: newX, y: newY });
-            grid[newY][newX] = CellType.TRAIL;
+            // Проверка на пустую клетку или свою линию
+            if (targetCell === CellType.EMPTY) {
+                // Проверка на столкновение с собственной линией (кроме последней позиции)
+                for (let i = 0; i < this.trail.length - 1; i++) {
+                    if (this.trail[i].x === newX && this.trail[i].y === newY) {
+                        return false; // Столкновение с хвостом - игра окончена
+                    }
+                }
+                
+                this.trail.push({ x: newX, y: newY });
+                grid[newY][newX] = CellType.TRAIL;
+                this.pos = { x: newX, y: newY };
+                return false;
+            } else if (targetCell === CellType.TRAIL) {
+                // Столкновение со своей линией
+                return false;
+            } else if (targetCell === CellType.CAPTURED) {
+                // Возврат на базу
+                this.pos = { x: newX, y: newY };
+                return true;
+            }
         } else {
             // Движение по захваченной территории
             if (targetCell !== CellType.CAPTURED) {
                 return false;
             }
+            this.pos = { x: newX, y: newY };
         }
 
-        this.pos = { x: newX, y: newY };
-
-        // Проверка возврата на захваченную территорию
-        if (this.isDrawing && targetCell === CellType.CAPTURED) {
-            this.isDrawing = false;
-            return true; // Сигнал для захвата территории
-        }
-
-        return this.isDrawing;
+        return false;
     }
 
     getTrail(): Position[] {
@@ -156,6 +176,15 @@ class Player {
     resetTrail(): void {
         this.trail = [];
         this.isDrawing = false;
+        this.hasMovedOffCaptured = false;
+    }
+    
+    clearTrailFromGrid(grid: CellType[][]): void {
+        for (const t of this.trail) {
+            if (t.x >= 0 && t.x < GRID_WIDTH && t.y >= 0 && t.y < GRID_HEIGHT) {
+                grid[t.y][t.x] = CellType.EMPTY;
+            }
+        }
     }
 }
 
@@ -193,12 +222,13 @@ class Enemy {
             newY = this.pos.y + this.velocity.y;
         }
 
-        // Проверка столкновения с захваченной территорией
+        // Проверка столкновения с захваченной территорией или трейлом
         const gridX = Math.floor(newX);
         const gridY = Math.floor(newY);
         
         if (gridX >= 0 && gridX < GRID_WIDTH && gridY >= 0 && gridY < GRID_HEIGHT) {
-            if (grid[gridY][gridX] === CellType.CAPTURED) {
+            const cell = grid[gridY][gridX];
+            if (cell === CellType.CAPTURED || cell === CellType.TRAIL) {
                 // Отскок
                 this.velocity.x *= -1;
                 this.velocity.y *= -1;
@@ -239,7 +269,14 @@ class CaptureAlgorithm {
     static capture(grid: CellType[][], trail: Position[]): { captured: number, killedEnemies: number } {
         if (trail.length < 3) return { captured: 0, killedEnemies: 0 };
 
-        // Находим bounding box трейла
+        // Очищаем трейл из сетки перед анализом
+        for (const t of trail) {
+            if (t.x >= 0 && t.x < GRID_WIDTH && t.y >= 0 && t.y < GRID_HEIGHT) {
+                grid[t.y][t.x] = CellType.EMPTY;
+            }
+        }
+
+        // Находим bounding box трейла для оптимизации
         let minX = GRID_WIDTH, maxX = 0, minY = GRID_HEIGHT, maxY = 0;
         for (const t of trail) {
             minX = Math.min(minX, t.x);
@@ -248,75 +285,121 @@ class CaptureAlgorithm {
             maxY = Math.max(maxY, t.y);
         }
 
-        // Очищаем трейл из сетки
+        // Расширяем bounding box на 1 клетку
+        minX = Math.max(0, minX - 1);
+        maxX = Math.min(GRID_WIDTH - 1, maxX + 1);
+        minY = Math.max(0, minY - 1);
+        maxY = Math.min(GRID_HEIGHT - 1, maxY + 1);
+
+        // Создаем множество точек трейла для быстрого поиска
+        const trailSet = new Set<string>();
         for (const t of trail) {
-            grid[t.y][t.x] = CellType.EMPTY;
+            trailSet.add(`${t.x},${t.y}`);
         }
 
-        // Используем Flood Fill для определения области
-        // Проверяем область внутри контура (начиная с первой точки трейла + 1)
-        const startNode = trail[0];
-        
-        // Определяем, какая область меньше - та и захватывается
-        // Для простоты: проверяем область "снаружи" от трейла
-        // Захатываем ту область, которая НЕ содержит основную массу свободных клеток
-        
-        const visited = new Set<string>();
-        const areaToCapture: Position[] = [];
-        
-        // BFS для поиска области внутри контура
-        const queue: Position[] = [];
-        
-        // Начинаем с клетки рядом с трейлом
-        for (let dy = -1; dy <= 1; dy++) {
-            for (let dx = -1; dx <= 1; dx++) {
-                const nx = startNode.x + dx;
-                const ny = startNode.y + dy;
-                if (nx >= 0 && nx < GRID_WIDTH && ny >= 0 && ny < GRID_HEIGHT) {
-                    if (grid[ny][nx] === CellType.EMPTY) {
-                        queue.push({ x: nx, y: ny });
-                        visited.add(`${nx},${ny}`);
+        // Функция BFS для заливки области
+        const floodFill = (startX: number, startY: number): Position[] => {
+            const area: Position[] = [];
+            const visited = new Set<string>();
+            const queue: Position[] = [{ x: startX, y: startY }];
+            visited.add(`${startX},${startY}`);
+
+            while (queue.length > 0) {
+                const current = queue.shift()!;
+                area.push(current);
+
+                const neighbors = [
+                    { x: current.x + 1, y: current.y },
+                    { x: current.x - 1, y: current.y },
+                    { x: current.x, y: current.y + 1 },
+                    { x: current.x, y: current.y - 1 }
+                ];
+
+                for (const n of neighbors) {
+                    // Выход за пределы bounding box
+                    if (n.x < minX || n.x > maxX || n.y < minY || n.y > maxY) continue;
+                    
+                    const key = `${n.x},${n.y}`;
+                    if (visited.has(key)) continue;
+                    
+                    // Проверяем тип клетки
+                    if (grid[n.y][n.x] === CellType.CAPTURED) continue;
+                    if (trailSet.has(key)) continue;
+                    
+                    visited.add(key);
+                    queue.push(n);
+                }
+            }
+
+            return area;
+        };
+
+        // Ищем пустую клетку внутри контура (рядом с трейлом)
+        let interiorStart: Position | null = null;
+        for (const t of trail) {
+            const neighbors = [
+                { x: t.x + 1, y: t.y },
+                { x: t.x - 1, y: t.y },
+                { x: t.x, y: t.y + 1 },
+                { x: t.x, y: t.y - 1 }
+            ];
+            for (const n of neighbors) {
+                if (n.x >= 0 && n.x < GRID_WIDTH && n.y >= 0 && n.y < GRID_HEIGHT) {
+                    if (grid[n.y][n.x] === CellType.EMPTY && !trailSet.has(`${n.x},${n.y}`)) {
+                        interiorStart = n;
                         break;
                     }
                 }
             }
-            if (queue.length > 0) break;
+            if (interiorStart) break;
         }
 
-        while (queue.length > 0) {
-            const current = queue.shift()!;
-            areaToCapture.push(current);
+        if (!interiorStart) {
+            return { captured: 0, killedEnemies: 0 };
+        }
 
-            const neighbors = [
-                { x: current.x + 1, y: current.y },
-                { x: current.x - 1, y: current.y },
-                { x: current.x, y: current.y + 1 },
-                { x: current.x, y: current.y - 1 }
-            ];
+        // Заливаем область начиная с найденной точки
+        const interiorArea = floodFill(interiorStart.x, interiorStart.y);
 
-            for (const n of neighbors) {
-                if (n.x < 0 || n.x >= GRID_WIDTH || n.y < 0 || n.y >= GRID_HEIGHT) continue;
-                
-                const key = `${n.x},${n.y}`;
-                if (visited.has(key)) continue;
-                
-                // Проверяем, является ли клетка частью границы (трейл или захваченная)
-                const isTrail = trail.some(t => t.x === n.x && t.y === n.y);
-                if (isTrail || grid[n.y][n.x] === CellType.CAPTURED) continue;
-                
-                visited.add(key);
-                queue.push(n);
+        // Теперь проверяем, является ли эта область "внутренней" или "внешней"
+        // Внешняя область должна касаться границ поля или быть очень большой
+        let touchesBoundary = false;
+        for (const cell of interiorArea) {
+            if (cell.x === 0 || cell.x === GRID_WIDTH - 1 || 
+                cell.y === 0 || cell.y === GRID_HEIGHT - 1) {
+                touchesBoundary = true;
+                break;
             }
         }
 
-        // Простая эвристика: если область маленькая (< 50% поля), захватываем её
-        const totalEmpty = GRID_WIDTH * GRID_HEIGHT / 2; // Примерно половина поля пустая
-        if (areaToCapture.length < totalEmpty * 0.5 && areaToCapture.length > 0) {
-            // Захватываем эту область
-            for (const cell of areaToCapture) {
+        // Если область касается границы - это внешняя область, значит захватываем другую
+        if (touchesBoundary) {
+            // Заливаем всё поле кроме внешней области
+            const allEmptyCells: Position[] = [];
+            for (let y = 0; y < GRID_HEIGHT; y++) {
+                for (let x = 0; x < GRID_WIDTH; x++) {
+                    if (grid[y][x] === CellType.EMPTY && !trailSet.has(`${x},${y}`)) {
+                        allEmptyCells.push({ x, y });
+                    }
+                }
+            }
+
+            // Клетки для захвата = все пустые - внешняя область
+            const exteriorSet = new Set(interiorArea.map(c => `${c.x},${c.y}`));
+            const cellsToCapture = allEmptyCells.filter(c => !exteriorSet.has(`${c.x},${c.y}`));
+
+            if (cellsToCapture.length > 0) {
+                for (const cell of cellsToCapture) {
+                    grid[cell.y][cell.x] = CellType.CAPTURED;
+                }
+                return { captured: cellsToCapture.length, killedEnemies: 0 };
+            }
+        } else {
+            // Это внутренняя область - захватываем её
+            for (const cell of interiorArea) {
                 grid[cell.y][cell.x] = CellType.CAPTURED;
             }
-            return { captured: areaToCapture.length, killedEnemies: 0 };
+            return { captured: interiorArea.length, killedEnemies: 0 };
         }
 
         return { captured: 0, killedEnemies: 0 };
@@ -421,7 +504,7 @@ class GameEngine {
     private renderer: Renderer | null = null;
     private capturedCells: number = 0;
     private totalCells: number = GRID_WIDTH * GRID_HEIGHT;
-    private enemySpeed: number = CONFIG.ENEMY_SPEED;
+    private enemySpeed: number = CONFIG.ENEMY_BASE_SPEED;
 
     constructor() {
         this.canvas = document.getElementById('game-canvas') as HTMLCanvasElement;
@@ -458,18 +541,23 @@ class GameEngine {
         this.initGrid();
         this.capturedCells = this.grid.flat().filter(c => c === CellType.CAPTURED).length;
         
-        // Спавн игрока на захваченной территории
+        // Спавн игрока на захваченной территории (левый верхний угол)
         this.player = new Player(1, 1);
         
         // Настройка сложности
         const diffConfig = CONFIG.DIFFICULTY[difficulty as keyof typeof CONFIG.DIFFICULTY] || CONFIG.DIFFICULTY.MEDIUM;
         this.enemySpeed = diffConfig.speed;
         
-        // Спавн врагов
+        // Спавн врагов в центре поля (подальше от границ)
         this.enemies = [];
+        const centerX = Math.floor(GRID_WIDTH / 2);
+        const centerY = Math.floor(GRID_HEIGHT / 2);
+        const spawnRadius = Math.min(GRID_WIDTH, GRID_HEIGHT) / 4;
+        
         for (let i = 0; i < diffConfig.enemies; i++) {
-            const ex = Math.floor(GRID_WIDTH / 2) + Math.floor(Math.random() * (GRID_WIDTH / 2 - 2)) + 1;
-            const ey = Math.floor(GRID_HEIGHT / 2) + Math.floor(Math.random() * (GRID_HEIGHT / 2 - 2)) + 1;
+            const angle = (i / diffConfig.enemies) * Math.PI * 2;
+            const ex = centerX + Math.floor(Math.cos(angle) * spawnRadius);
+            const ey = centerY + Math.floor(Math.sin(angle) * spawnRadius);
             this.enemies.push(new Enemy(ex, ey, this.enemySpeed));
         }
         
@@ -495,11 +583,21 @@ class GameEngine {
 
         // Движение игрока
         const wasDrawing = this.player.isCurrentlyDrawing();
-        const shouldCapture = this.player.move(this.grid);
+        const moveResult = this.player.move(this.grid);
         const isDrawingNow = this.player.isCurrentlyDrawing();
 
-        // Если игрок начал рисовать и закончил - захват территории
-        if (wasDrawing && !isDrawingNow && shouldCapture) {
+        // Если движение вернуло false во время рисования - это столкновение с хвостом (Game Over)
+        if (wasDrawing && !moveResult && !isDrawingNow) {
+            // Игрок врезался в свою линию
+            this.player.clearTrailFromGrid(this.grid);
+            this.player.resetTrail();
+            this.state = GameState.GAME_OVER;
+            this.updateUI();
+            return;
+        }
+
+        // Если игрок завершил контур (вернулся на захваченную территорию)
+        if (wasDrawing && moveResult) {
             const trail = this.player.getTrail();
             const result = CaptureAlgorithm.capture(this.grid, trail);
             this.capturedCells += result.captured;
@@ -521,8 +619,10 @@ class GameEngine {
         for (const enemy of this.enemies) {
             enemy.move(this.grid);
             
-            // Проверка столкновения с линией
+            // Проверка столкновения с линией (только если игрок рисует)
             if (this.player.isCurrentlyDrawing() && enemy.checkCollision(trail)) {
+                this.player.clearTrailFromGrid(this.grid);
+                this.player.resetTrail();
                 this.state = GameState.GAME_OVER;
                 this.updateUI();
                 return;
@@ -595,6 +695,10 @@ class GameEngine {
             pauseOverlay?.classList.add('hidden');
         }
     }
+
+    public getPlayer(): Player | null {
+        return this.player;
+    }
 }
 
 // ============================================
@@ -634,22 +738,23 @@ document.addEventListener('DOMContentLoaded', () => {
         
         // Управление игроком
         if (game.getState() === GameState.PLAYING) {
+            const player = game.getPlayer();
             switch (e.code) {
                 case 'ArrowUp':
                 case 'KeyW':
-                    (game as any).player?.setDirection(Direction.UP);
+                    player?.setDirection(Direction.UP);
                     break;
                 case 'ArrowDown':
                 case 'KeyS':
-                    (game as any).player?.setDirection(Direction.DOWN);
+                    player?.setDirection(Direction.DOWN);
                     break;
                 case 'ArrowLeft':
                 case 'KeyA':
-                    (game as any).player?.setDirection(Direction.LEFT);
+                    player?.setDirection(Direction.LEFT);
                     break;
                 case 'ArrowRight':
                 case 'KeyD':
-                    (game as any).player?.setDirection(Direction.RIGHT);
+                    player?.setDirection(Direction.RIGHT);
                     break;
             }
         }
