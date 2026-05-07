@@ -1,23 +1,12 @@
 /**
- * Xonix Web Game - Полная реализация с исправленными багами
- * Исправления:
- * - Игрок спавнится на захваченной территории
- * - Корректный алгоритм захвата через Flood Fill
- * - Правильная обработка коллизий
- * - Исправлено движение в любом направлении
+ * Xonix Web Game - Чистая реализация
  */
-
-// ============================================
-// КОНСТАНТЫ И НАСТРОЙКИ
-// ============================================
 
 const CONFIG = {
     CANVAS_WIDTH: 800,
     CANVAS_HEIGHT: 600,
     GRID_SIZE: 5,
     TARGET_CAPTURE_PERCENT: 80,
-    PLAYER_SPEED: 1,
-    ENEMY_BASE_SPEED: 0.3,
     DIFFICULTY: {
         EASY: { enemies: 2, speed: 0.25 },
         MEDIUM: { enemies: 4, speed: 0.4 },
@@ -25,740 +14,267 @@ const CONFIG = {
     }
 };
 
-const GRID_WIDTH = Math.floor(CONFIG.CANVAS_WIDTH / CONFIG.GRID_SIZE);
-const GRID_HEIGHT = Math.floor(CONFIG.CANVAS_HEIGHT / CONFIG.GRID_SIZE);
+const GRID_W = Math.floor(CONFIG.CANVAS_WIDTH / CONFIG.GRID_SIZE);
+const GRID_H = Math.floor(CONFIG.CANVAS_HEIGHT / CONFIG.GRID_SIZE);
 
-// ============================================
-// ТИПЫ
-// ============================================
+enum GameState { MENU, PLAYING, PAUSED, GAME_OVER, VICTORY }
+enum Cell { EMPTY = 0, SAFE = 1, TRAIL = 2 }
+enum Dir { UP, DOWN, LEFT, RIGHT }
 
-enum GameState {
-    MENU = 'MENU',
-    PLAYING = 'PLAYING',
-    PAUSED = 'PAUSED',
-    GAME_OVER = 'GAME_OVER',
-    VICTORY = 'VICTORY'
+interface Point { x: number; y: number; }
+
+let canvas: HTMLCanvasElement;
+let ctx: CanvasRenderingContext2D;
+let state: GameState = GameState.MENU;
+let grid: Uint8Array;
+let player: { x: number; y: number; dir: Dir; trail: Point[]; isDrawing: boolean };
+let enemies: Array<{ x: number; y: number; vx: number; vy: number }>;
+let capturedPercent: number = 0;
+let difficultySetting = CONFIG.DIFFICULTY.EASY;
+let nextDir: Dir | null = null;
+
+function initGrid(): void {
+    grid = new Uint8Array(GRID_W * GRID_H);
+    for (let x = 0; x < GRID_W; x++) {
+        grid[x] = Cell.SAFE;
+        grid[(GRID_H - 1) * GRID_W + x] = Cell.SAFE;
+    }
+    for (let y = 0; y < GRID_H; y++) {
+        grid[y * GRID_W] = Cell.SAFE;
+        grid[y * GRID_W + (GRID_W - 1)] = Cell.SAFE;
+    }
 }
 
-enum CellType {
-    EMPTY = 0,
-    CAPTURED = 1,
-    TRAIL = 2
+function getCell(x: number, y: number): Cell {
+    if (x < 0 || x >= GRID_W || y < 0 || y >= GRID_H) return Cell.SAFE;
+    return grid[y * GRID_W + x];
 }
 
-enum Direction {
-    UP = 'UP',
-    DOWN = 'DOWN',
-    LEFT = 'LEFT',
-    RIGHT = 'RIGHT',
-    NONE = 'NONE'
+function setCell(x: number, y: number, val: Cell): void {
+    if (x >= 0 && x < GRID_W && y >= 0 && y < GRID_H) {
+        grid[y * GRID_W + x] = val;
+    }
 }
 
-interface Position {
-    x: number;
-    y: number;
-}
-
-// ============================================
-// КЛАССЫ
-// ============================================
-
-class Player {
-    private pos: Position;
-    private direction: Direction = Direction.RIGHT;
-    private nextDirection: Direction = Direction.RIGHT;
-    private isDrawing: boolean = false;
-    private trail: Position[] = [];
-    private hasMovedOffCaptured: boolean = false;
-
-    constructor(startX: number, startY: number) {
-        this.pos = { x: startX, y: startY };
-    }
-
-    getPosition(): Position {
-        return { ...this.pos };
-    }
-
-    getDirection(): Direction {
-        return this.direction;
-    }
-
-    setDirection(dir: Direction): void {
-        // Запрещаем разворот на 180 градусов только если движемся
-        if (this.isDrawing) {
-            if ((dir === Direction.UP && this.direction === Direction.DOWN) ||
-                (dir === Direction.DOWN && this.direction === Direction.UP) ||
-                (dir === Direction.LEFT && this.direction === Direction.RIGHT) ||
-                (dir === Direction.RIGHT && this.direction === Direction.LEFT)) {
-                return;
-            }
-        }
-        this.nextDirection = dir;
-    }
-
-    move(grid: CellType[][]): boolean {
-        this.direction = this.nextDirection;
-        
-        let newX = this.pos.x;
-        let newY = this.pos.y;
-
-        switch (this.direction) {
-            case Direction.UP: newY--; break;
-            case Direction.DOWN: newY++; break;
-            case Direction.LEFT: newX--; break;
-            case Direction.RIGHT: newX++; break;
-        }
-
-        // Проверка границ
-        if (newX < 0 || newX >= GRID_WIDTH || newY < 0 || newY >= GRID_HEIGHT) {
-            return false;
-        }
-
-        const targetCell = grid[newY][newX];
-        const currentCell = grid[this.pos.y][this.pos.x];
-        
-        // Логика начала рисования
-        if (!this.isDrawing && currentCell === CellType.CAPTURED && targetCell === CellType.EMPTY) {
-            this.isDrawing = true;
-            this.hasMovedOffCaptured = true;
-            this.trail = [{ x: this.pos.x, y: this.pos.y }];
-        }
-
-        // Если рисуем линию
-        if (this.isDrawing) {
-            // Нельзя идти обратно на захваченную сразу (минимум 1 клетка линии)
-            if (targetCell === CellType.CAPTURED && this.trail.length > 0) {
-                // Возврат на захваченную территорию - завершаем контур
-                this.pos = { x: newX, y: newY };
-                return true; // Сигнал для захвата
-            }
-            
-            // Проверка на пустую клетку или свою линию
-            if (targetCell === CellType.EMPTY) {
-                // Проверка на столкновение с собственной линией (кроме последней позиции)
-                for (let i = 0; i < this.trail.length - 1; i++) {
-                    if (this.trail[i].x === newX && this.trail[i].y === newY) {
-                        return false; // Столкновение с хвостом - игра окончена
-                    }
-                }
-                
-                this.trail.push({ x: newX, y: newY });
-                grid[newY][newX] = CellType.TRAIL;
-                this.pos = { x: newX, y: newY };
-                return false;
-            } else if (targetCell === CellType.TRAIL) {
-                // Столкновение со своей линией
-                return false;
-            } else if (targetCell === CellType.CAPTURED) {
-                // Возврат на базу
-                this.pos = { x: newX, y: newY };
-                return true;
-            }
-        } else {
-            // Движение по захваченной территории
-            if (targetCell !== CellType.CAPTURED) {
-                return false;
-            }
-            this.pos = { x: newX, y: newY };
-        }
-
-        return false;
-    }
-
-    getTrail(): Position[] {
-        return [...this.trail];
-    }
-
-    isCurrentlyDrawing(): boolean {
-        return this.isDrawing;
-    }
-
-    resetTrail(): void {
-        this.trail = [];
-        this.isDrawing = false;
-        this.hasMovedOffCaptured = false;
-    }
+function initGame(): void {
+    initGrid();
+    player = { x: 1, y: 1, dir: Dir.RIGHT, trail: [], isDrawing: false };
+    nextDir = null;
+    enemies = [];
+    const cx = Math.floor(GRID_W / 2);
+    const cy = Math.floor(GRID_H / 2);
+    const r = Math.max(5, Math.min(GRID_W, GRID_H) / 4);
     
-    clearTrailFromGrid(grid: CellType[][]): void {
-        for (const t of this.trail) {
-            if (t.x >= 0 && t.x < GRID_WIDTH && t.y >= 0 && t.y < GRID_HEIGHT) {
-                grid[t.y][t.x] = CellType.EMPTY;
-            }
-        }
-    }
-}
-
-class Enemy {
-    private pos: Position;
-    private velocity: Position;
-    private speed: number;
-
-    constructor(x: number, y: number, speed: number) {
-        this.pos = { x, y };
-        this.speed = speed;
-        // Случайное направление
-        const angle = Math.random() * Math.PI * 2;
-        this.velocity = {
-            x: Math.cos(angle) * speed,
-            y: Math.sin(angle) * speed
-        };
-    }
-
-    getPosition(): Position {
-        return { ...this.pos };
-    }
-
-    move(grid: CellType[][]): void {
-        let newX = this.pos.x + this.velocity.x;
-        let newY = this.pos.y + this.velocity.y;
-
-        // Проверка границ экрана
-        if (newX <= 0 || newX >= GRID_WIDTH - 1) {
-            this.velocity.x *= -1;
-            newX = this.pos.x + this.velocity.x;
-        }
-        if (newY <= 0 || newY >= GRID_HEIGHT - 1) {
-            this.velocity.y *= -1;
-            newY = this.pos.y + this.velocity.y;
-        }
-
-        // Проверка столкновения с захваченной территорией или трейлом
-        const gridX = Math.floor(newX);
-        const gridY = Math.floor(newY);
-        
-        if (gridX >= 0 && gridX < GRID_WIDTH && gridY >= 0 && gridY < GRID_HEIGHT) {
-            const cell = grid[gridY][gridX];
-            if (cell === CellType.CAPTURED || cell === CellType.TRAIL) {
-                // Отскок
-                this.velocity.x *= -1;
-                this.velocity.y *= -1;
-                newX = this.pos.x + this.velocity.x;
-                newY = this.pos.y + this.velocity.y;
-            }
-        }
-
-        this.pos = { x: newX, y: newY };
-    }
-
-    checkCollision(trail: Position[]): boolean {
-        const enemyGridX = Math.floor(this.pos.x);
-        const enemyGridY = Math.floor(this.pos.y);
-
-        for (const t of trail) {
-            if (t.x === enemyGridX && t.y === enemyGridY) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    checkHeadCollision(playerPos: Position): boolean {
-        const enemyGridX = Math.floor(this.pos.x);
-        const enemyGridY = Math.floor(this.pos.y);
-        return enemyGridX === playerPos.x && enemyGridY === playerPos.y;
-    }
-
-    isInArea(x1: number, y1: number, x2: number, y2: number): boolean {
-        const enemyGridX = Math.floor(this.pos.x);
-        const enemyGridY = Math.floor(this.pos.y);
-        return enemyGridX >= x1 && enemyGridX <= x2 && enemyGridY >= y1 && enemyGridY <= y2;
-    }
-}
-
-class CaptureAlgorithm {
-    static capture(grid: CellType[][], trail: Position[]): { captured: number, killedEnemies: number } {
-        if (trail.length < 3) return { captured: 0, killedEnemies: 0 };
-
-        // Очищаем трейл из сетки перед анализом
-        for (const t of trail) {
-            if (t.x >= 0 && t.x < GRID_WIDTH && t.y >= 0 && t.y < GRID_HEIGHT) {
-                grid[t.y][t.x] = CellType.EMPTY;
-            }
-        }
-
-        // Находим bounding box трейла для оптимизации
-        let minX = GRID_WIDTH, maxX = 0, minY = GRID_HEIGHT, maxY = 0;
-        for (const t of trail) {
-            minX = Math.min(minX, t.x);
-            maxX = Math.max(maxX, t.x);
-            minY = Math.min(minY, t.y);
-            maxY = Math.max(maxY, t.y);
-        }
-
-        // Расширяем bounding box на 1 клетку
-        minX = Math.max(0, minX - 1);
-        maxX = Math.min(GRID_WIDTH - 1, maxX + 1);
-        minY = Math.max(0, minY - 1);
-        maxY = Math.min(GRID_HEIGHT - 1, maxY + 1);
-
-        // Создаем множество точек трейла для быстрого поиска
-        const trailSet = new Set<string>();
-        for (const t of trail) {
-            trailSet.add(`${t.x},${t.y}`);
-        }
-
-        // Функция BFS для заливки области
-        const floodFill = (startX: number, startY: number): Position[] => {
-            const area: Position[] = [];
-            const visited = new Set<string>();
-            const queue: Position[] = [{ x: startX, y: startY }];
-            visited.add(`${startX},${startY}`);
-
-            while (queue.length > 0) {
-                const current = queue.shift()!;
-                area.push(current);
-
-                const neighbors = [
-                    { x: current.x + 1, y: current.y },
-                    { x: current.x - 1, y: current.y },
-                    { x: current.x, y: current.y + 1 },
-                    { x: current.x, y: current.y - 1 }
-                ];
-
-                for (const n of neighbors) {
-                    // Выход за пределы bounding box
-                    if (n.x < minX || n.x > maxX || n.y < minY || n.y > maxY) continue;
-                    
-                    const key = `${n.x},${n.y}`;
-                    if (visited.has(key)) continue;
-                    
-                    // Проверяем тип клетки
-                    if (grid[n.y][n.x] === CellType.CAPTURED) continue;
-                    if (trailSet.has(key)) continue;
-                    
-                    visited.add(key);
-                    queue.push(n);
-                }
-            }
-
-            return area;
-        };
-
-        // Ищем пустую клетку внутри контура (рядом с трейлом)
-        let interiorStart: Position | null = null;
-        for (const t of trail) {
-            const neighbors = [
-                { x: t.x + 1, y: t.y },
-                { x: t.x - 1, y: t.y },
-                { x: t.x, y: t.y + 1 },
-                { x: t.x, y: t.y - 1 }
-            ];
-            for (const n of neighbors) {
-                if (n.x >= 0 && n.x < GRID_WIDTH && n.y >= 0 && n.y < GRID_HEIGHT) {
-                    if (grid[n.y][n.x] === CellType.EMPTY && !trailSet.has(`${n.x},${n.y}`)) {
-                        interiorStart = n;
-                        break;
-                    }
-                }
-            }
-            if (interiorStart) break;
-        }
-
-        if (!interiorStart) {
-            return { captured: 0, killedEnemies: 0 };
-        }
-
-        // Заливаем область начиная с найденной точки
-        const interiorArea = floodFill(interiorStart.x, interiorStart.y);
-
-        // Теперь проверяем, является ли эта область "внутренней" или "внешней"
-        // Внешняя область должна касаться границ поля или быть очень большой
-        let touchesBoundary = false;
-        for (const cell of interiorArea) {
-            if (cell.x === 0 || cell.x === GRID_WIDTH - 1 || 
-                cell.y === 0 || cell.y === GRID_HEIGHT - 1) {
-                touchesBoundary = true;
-                break;
-            }
-        }
-
-        // Если область касается границы - это внешняя область, значит захватываем другую
-        if (touchesBoundary) {
-            // Заливаем всё поле кроме внешней области
-            const allEmptyCells: Position[] = [];
-            for (let y = 0; y < GRID_HEIGHT; y++) {
-                for (let x = 0; x < GRID_WIDTH; x++) {
-                    if (grid[y][x] === CellType.EMPTY && !trailSet.has(`${x},${y}`)) {
-                        allEmptyCells.push({ x, y });
-                    }
-                }
-            }
-
-            // Клетки для захвата = все пустые - внешняя область
-            const exteriorSet = new Set(interiorArea.map(c => `${c.x},${c.y}`));
-            const cellsToCapture = allEmptyCells.filter(c => !exteriorSet.has(`${c.x},${c.y}`));
-
-            if (cellsToCapture.length > 0) {
-                for (const cell of cellsToCapture) {
-                    grid[cell.y][cell.x] = CellType.CAPTURED;
-                }
-                return { captured: cellsToCapture.length, killedEnemies: 0 };
-            }
-        } else {
-            // Это внутренняя область - захватываем её
-            for (const cell of interiorArea) {
-                grid[cell.y][cell.x] = CellType.CAPTURED;
-            }
-            return { captured: interiorArea.length, killedEnemies: 0 };
-        }
-
-        return { captured: 0, killedEnemies: 0 };
-    }
-}
-
-class Renderer {
-    private ctx: CanvasRenderingContext2D;
-
-    constructor(ctx: CanvasRenderingContext2D) {
-        this.ctx = ctx;
-    }
-
-    render(grid: CellType[][], player: Player, enemies: Enemy[], score: number, percent: number): void {
-        // Очистка
-        this.ctx.fillStyle = '#1a1a2e';
-        this.ctx.fillRect(0, 0, CONFIG.CANVAS_WIDTH, CONFIG.CANVAS_HEIGHT);
-
-        // Отрисовка сетки
-        for (let y = 0; y < GRID_HEIGHT; y++) {
-            for (let x = 0; x < GRID_WIDTH; x++) {
-                const px = x * CONFIG.GRID_SIZE;
-                const py = y * CONFIG.GRID_SIZE;
-
-                switch (grid[y][x]) {
-                    case CellType.CAPTURED:
-                        this.ctx.fillStyle = '#4a4a6a';
-                        this.ctx.fillRect(px, py, CONFIG.GRID_SIZE, CONFIG.GRID_SIZE);
-                        break;
-                    case CellType.TRAIL:
-                        this.ctx.fillStyle = '#00ff00';
-                        this.ctx.fillRect(px, py, CONFIG.GRID_SIZE, CONFIG.GRID_SIZE);
-                        break;
-                }
-            }
-        }
-
-        // Отрисовка игрока
-        const playerPos = player.getPosition();
-        this.ctx.fillStyle = '#ffff00';
-        this.ctx.beginPath();
-        this.ctx.arc(
-            playerPos.x * CONFIG.GRID_SIZE + CONFIG.GRID_SIZE / 2,
-            playerPos.y * CONFIG.GRID_SIZE + CONFIG.GRID_SIZE / 2,
-            CONFIG.GRID_SIZE,
-            0,
-            Math.PI * 2
-        );
-        this.ctx.fill();
-
-        // Отрисовка врагов
-        for (const enemy of enemies) {
-            const pos = enemy.getPosition();
-            this.ctx.fillStyle = '#ff0000';
-            this.ctx.beginPath();
-            this.ctx.arc(
-                pos.x * CONFIG.GRID_SIZE + CONFIG.GRID_SIZE / 2,
-                pos.y * CONFIG.GRID_SIZE + CONFIG.GRID_SIZE / 2,
-                CONFIG.GRID_SIZE,
-                0,
-                Math.PI * 2
-            );
-            this.ctx.fill();
-        }
-
-        // HUD
-        this.ctx.fillStyle = '#ffffff';
-        this.ctx.font = '16px Courier New';
-        this.ctx.textAlign = 'left';
-        this.ctx.fillText(`Захват: ${percent.toFixed(1)}%`, 10, 25);
-        this.ctx.fillText(`Цель: ${CONFIG.TARGET_CAPTURE_PERCENT}%`, 10, 45);
-    }
-
-    renderGameOver(): void {
-        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-        this.ctx.fillRect(0, 0, CONFIG.CANVAS_WIDTH, CONFIG.CANVAS_HEIGHT);
-        
-        this.ctx.fillStyle = '#ff0000';
-        this.ctx.font = '48px Courier New';
-        this.ctx.textAlign = 'center';
-        this.ctx.fillText('GAME OVER', CONFIG.CANVAS_WIDTH / 2, CONFIG.CANVAS_HEIGHT / 2);
-    }
-
-    renderVictory(): void {
-        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-        this.ctx.fillRect(0, 0, CONFIG.CANVAS_WIDTH, CONFIG.CANVAS_HEIGHT);
-        
-        this.ctx.fillStyle = '#00ff00';
-        this.ctx.font = '48px Courier New';
-        this.ctx.textAlign = 'center';
-        this.ctx.fillText('ПОБЕДА!', CONFIG.CANVAS_WIDTH / 2, CONFIG.CANVAS_HEIGHT / 2);
-    }
-}
-
-class GameEngine {
-    private canvas: HTMLCanvasElement;
-    private ctx: CanvasRenderingContext2D;
-    private state: GameState = GameState.MENU;
-    private grid: CellType[][] = [];
-    private player: Player | null = null;
-    private enemies: Enemy[] = [];
-    private renderer: Renderer | null = null;
-    private capturedCells: number = 0;
-    private totalCells: number = GRID_WIDTH * GRID_HEIGHT;
-    private enemySpeed: number = CONFIG.ENEMY_BASE_SPEED;
-
-    constructor() {
-        this.canvas = document.getElementById('game-canvas') as HTMLCanvasElement;
-        this.ctx = this.canvas.getContext('2d')!;
-        
-        this.canvas.width = CONFIG.CANVAS_WIDTH;
-        this.canvas.height = CONFIG.CANVAS_HEIGHT;
-        
-        this.renderer = new Renderer(this.ctx);
-        this.gameLoop = this.gameLoop.bind(this);
-        
-        this.initGrid();
-        requestAnimationFrame(this.gameLoop);
-    }
-
-    private initGrid(): void {
-        this.grid = [];
-        for (let y = 0; y < GRID_HEIGHT; y++) {
-            const row: CellType[] = [];
-            for (let x = 0; x < GRID_WIDTH; x++) {
-                // Создаем границу из захваченной территории
-                if (y === 0 || y === GRID_HEIGHT - 1 || x === 0 || x === GRID_WIDTH - 1) {
-                    row.push(CellType.CAPTURED);
-                    this.capturedCells++;
-                } else {
-                    row.push(CellType.EMPTY);
-                }
-            }
-            this.grid.push(row);
-        }
-    }
-
-    private startGame(difficulty: string): void {
-        this.initGrid();
-        this.capturedCells = this.grid.flat().filter(c => c === CellType.CAPTURED).length;
-        
-        // Спавн игрока на захваченной территории (левый верхний угол)
-        this.player = new Player(1, 1);
-        
-        // Настройка сложности
-        const diffConfig = CONFIG.DIFFICULTY[difficulty as keyof typeof CONFIG.DIFFICULTY] || CONFIG.DIFFICULTY.MEDIUM;
-        this.enemySpeed = diffConfig.speed;
-        
-        // Спавн врагов в центре поля (подальше от границ)
-        this.enemies = [];
-        const centerX = Math.floor(GRID_WIDTH / 2);
-        const centerY = Math.floor(GRID_HEIGHT / 2);
-        const spawnRadius = Math.min(GRID_WIDTH, GRID_HEIGHT) / 4;
-        
-        for (let i = 0; i < diffConfig.enemies; i++) {
-            const angle = (i / diffConfig.enemies) * Math.PI * 2;
-            const ex = centerX + Math.floor(Math.cos(angle) * spawnRadius);
-            const ey = centerY + Math.floor(Math.sin(angle) * spawnRadius);
-            this.enemies.push(new Enemy(ex, ey, this.enemySpeed));
-        }
-        
-        this.state = GameState.PLAYING;
-        this.updateUI();
-    }
-
-    private gameLoop(timestamp: number): void {
-        if (this.state === GameState.PLAYING) {
-            this.update();
-            this.render();
-        } else if (this.state === GameState.MENU || 
-                   this.state === GameState.GAME_OVER || 
-                   this.state === GameState.VICTORY) {
-            this.render();
-        }
-        
-        requestAnimationFrame(this.gameLoop);
-    }
-
-    private update(): void {
-        if (!this.player || !this.renderer) return;
-
-        // Движение игрока
-        const wasDrawing = this.player.isCurrentlyDrawing();
-        const moveResult = this.player.move(this.grid);
-        const isDrawingNow = this.player.isCurrentlyDrawing();
-
-        // Если движение вернуло false во время рисования - это столкновение с хвостом (Game Over)
-        if (wasDrawing && !moveResult && !isDrawingNow) {
-            // Игрок врезался в свою линию
-            this.player.clearTrailFromGrid(this.grid);
-            this.player.resetTrail();
-            this.state = GameState.GAME_OVER;
-            this.updateUI();
-            return;
-        }
-
-        // Если игрок завершил контур (вернулся на захваченную территорию)
-        if (wasDrawing && moveResult) {
-            const trail = this.player.getTrail();
-            const result = CaptureAlgorithm.capture(this.grid, trail);
-            this.capturedCells += result.captured;
-            this.player.resetTrail();
-
-            // Проверка победы
-            const percent = (this.capturedCells / this.totalCells) * 100;
-            if (percent >= CONFIG.TARGET_CAPTURE_PERCENT) {
-                this.state = GameState.VICTORY;
-                this.updateUI();
-                return;
-            }
-        }
-
-        // Движение врагов и проверка столкновений
-        const playerPos = this.player.getPosition();
-        const trail = this.player.getTrail();
-
-        for (const enemy of this.enemies) {
-            enemy.move(this.grid);
-            
-            // Проверка столкновения с линией (только если игрок рисует)
-            if (this.player.isCurrentlyDrawing() && enemy.checkCollision(trail)) {
-                this.player.clearTrailFromGrid(this.grid);
-                this.player.resetTrail();
-                this.state = GameState.GAME_OVER;
-                this.updateUI();
-                return;
-            }
-            
-            // Проверка столкновения с головой игрока
-            if (enemy.checkHeadCollision(playerPos)) {
-                this.state = GameState.GAME_OVER;
-                this.updateUI();
-                return;
-            }
-        }
-    }
-
-    private render(): void {
-        if (!this.renderer || !this.player) return;
-
-        const percent = (this.capturedCells / this.totalCells) * 100;
-        this.renderer.render(this.grid, this.player, this.enemies, 0, percent);
-
-        if (this.state === GameState.GAME_OVER) {
-            this.renderer.renderGameOver();
-        } else if (this.state === GameState.VICTORY) {
-            this.renderer.renderVictory();
-        }
-    }
-
-    public setState(newState: GameState): void {
-        this.state = newState;
-        this.updateUI();
-    }
-
-    public getState(): GameState {
-        return this.state;
-    }
-
-    public startWithDifficulty(difficulty: string): void {
-        this.startGame(difficulty);
-    }
-
-    private updateUI(): void {
-        document.querySelectorAll('.screen').forEach(screen => {
-            screen.classList.remove('active');
+    for (let i = 0; i < difficultySetting.enemies; i++) {
+        const a = (i / difficultySetting.enemies) * Math.PI * 2;
+        const a2 = Math.random() * Math.PI * 2;
+        enemies.push({
+            x: Math.floor(cx + Math.cos(a) * r),
+            y: Math.floor(cy + Math.sin(a) * r),
+            vx: Math.cos(a2) * difficultySetting.speed,
+            vy: Math.sin(a2) * difficultySetting.speed
         });
-        
-        switch (this.state) {
-            case GameState.MENU:
-                document.getElementById('main-menu')?.classList.add('active');
-                break;
-            case GameState.PLAYING:
-                document.getElementById('game-screen')?.classList.add('active');
-                break;
-            case GameState.GAME_OVER:
-                document.getElementById('game-over-screen')?.classList.add('active');
-                break;
-            case GameState.VICTORY:
-                document.getElementById('victory-screen')?.classList.add('active');
-                break;
+    }
+    capturedPercent = calculateCapturePercent();
+    state = GameState.PLAYING;
+}
+
+function finalizeCapture(): void {
+    if (player.trail.length === 0) return;
+    
+    for (const p of player.trail) setCell(p.x, p.y, Cell.EMPTY);
+    
+    const visited = new Uint8Array(GRID_W * GRID_H);
+    const queue: Point[] = [];
+    
+    for (let y = 0; y < GRID_H; y++) {
+        for (let x = 0; x < GRID_W; x++) {
+            if (getCell(x, y) === Cell.SAFE) {
+                const idx = y * GRID_W + x;
+                if (!visited[idx]) {
+                    visited[idx] = 1;
+                    queue.push({ x, y });
+                }
+            }
         }
     }
-
-    public handlePause(): void {
-        if (this.state === GameState.PLAYING) {
-            this.state = GameState.PAUSED;
-            const pauseOverlay = document.getElementById('pause-overlay');
-            pauseOverlay?.classList.remove('hidden');
-        } else if (this.state === GameState.PAUSED) {
-            this.state = GameState.PLAYING;
-            const pauseOverlay = document.getElementById('pause-overlay');
-            pauseOverlay?.classList.add('hidden');
+    
+    const dirs = [[0, -1], [0, 1], [-1, 0], [1, 0]];
+    while (queue.length > 0) {
+        const cur = queue.shift()!;
+        for (const d of dirs) {
+            const nx = cur.x + d[0], ny = cur.y + d[1];
+            if (nx >= 0 && nx < GRID_W && ny >= 0 && ny < GRID_H) {
+                const idx = ny * GRID_W + nx;
+                if (!visited[idx] && getCell(nx, ny) !== Cell.SAFE) {
+                    visited[idx] = 1;
+                    queue.push({ x: nx, y: ny });
+                }
+            }
         }
     }
-
-    public getPlayer(): Player | null {
-        return this.player;
+    
+    let capturedCount = 0;
+    for (let y = 0; y < GRID_H; y++) {
+        for (let x = 0; x < GRID_W; x++) {
+            const idx = y * GRID_W + x;
+            if (getCell(x, y) === Cell.EMPTY && !visited[idx]) {
+                setCell(x, y, Cell.SAFE);
+                capturedCount++;
+            }
+        }
+    }
+    
+    for (const p of player.trail) setCell(p.x, p.y, Cell.SAFE);
+    player.trail = [];
+    player.isDrawing = false;
+    
+    if (capturedCount > 0) {
+        capturedPercent = calculateCapturePercent();
+        if (capturedPercent >= CONFIG.TARGET_CAPTURE_PERCENT) state = GameState.VICTORY;
     }
 }
 
-// ============================================
-// ИНИЦИАЛИЗАЦИЯ
-// ============================================
+function calculateCapturePercent(): number {
+    let count = 0;
+    for (let i = 0; i < grid.length; i++) if (grid[i] === Cell.SAFE) count++;
+    return Math.floor((count / grid.length) * 100);
+}
 
-let game: GameEngine;
-
-document.addEventListener('DOMContentLoaded', () => {
-    console.log('Xonix Game initialized');
-    console.log(`Grid size: ${GRID_WIDTH}x${GRID_HEIGHT}`);
+function updatePlayer(): void {
+    if (nextDir !== null) {
+        const opp: Record<Dir, Dir> = { [Dir.UP]: Dir.DOWN, [Dir.DOWN]: Dir.UP, [Dir.LEFT]: Dir.RIGHT, [Dir.RIGHT]: Dir.LEFT };
+        if (!player.isDrawing || nextDir !== opp[player.dir]) player.dir = nextDir;
+        nextDir = null;
+    }
     
-    game = new GameEngine();
+    let nx = player.x, ny = player.y;
+    if (player.dir === Dir.UP) ny--;
+    else if (player.dir === Dir.DOWN) ny++;
+    else if (player.dir === Dir.LEFT) nx--;
+    else if (player.dir === Dir.RIGHT) nx++;
+    
+    if (nx < 0 || nx >= GRID_W || ny < 0 || ny >= GRID_H) { state = GameState.GAME_OVER; return; }
+    
+    const newCell = getCell(nx, ny);
+    
+    if (player.isDrawing) {
+        if (newCell === Cell.SAFE) { finalizeCapture(); }
+        else if (newCell === Cell.EMPTY) {
+            player.trail.push({ x: player.x, y: player.y });
+            setCell(player.x, player.y, Cell.TRAIL);
+        }
+        if (newCell === Cell.TRAIL) { state = GameState.GAME_OVER; return; }
+    } else {
+        if (newCell === Cell.EMPTY) { player.isDrawing = true; player.trail = []; }
+    }
+    
+    player.x = nx; player.y = ny;
+}
 
-    // Обработчики кнопок
-    document.getElementById('start-btn')?.addEventListener('click', () => {
-        const difficulty = (document.getElementById('difficulty') as HTMLSelectElement).value;
-        game.startWithDifficulty(difficulty);
-    });
-
-    document.getElementById('restart-btn')?.addEventListener('click', () => {
-        const difficulty = (document.getElementById('difficulty') as HTMLSelectElement).value;
-        game.startWithDifficulty(difficulty);
-    });
-
-    document.getElementById('next-level-btn')?.addEventListener('click', () => {
-        const difficulty = (document.getElementById('difficulty') as HTMLSelectElement).value;
-        game.startWithDifficulty(difficulty);
-    });
-
-    // Пауза
-    document.addEventListener('keydown', (e) => {
-        if (e.code === 'Space' || e.code === 'Escape') {
-            e.preventDefault();
-            game.handlePause();
+function updateEnemies(): void {
+    for (const e of enemies) {
+        let bounced = false;
+        const cx = Math.floor(e.x + e.vx), cy = Math.floor(e.y + e.vy);
+        
+        if (cx < 0 || cx >= GRID_W || getCell(cx, Math.floor(e.y)) !== Cell.EMPTY) { e.vx = -e.vx; bounced = true; }
+        if (cy < 0 || cy >= GRID_H || getCell(Math.floor(e.x), cy) !== Cell.EMPTY) { e.vy = -e.vy; bounced = true; }
+        
+        if (bounced) {
+            const a = Math.random() * Math.PI * 2;
+            e.vx = Math.cos(a) * difficultySetting.speed;
+            e.vy = Math.sin(a) * difficultySetting.speed;
         }
         
-        // Управление игроком
-        if (game.getState() === GameState.PLAYING) {
-            const player = game.getPlayer();
-            switch (e.code) {
-                case 'ArrowUp':
-                case 'KeyW':
-                    player?.setDirection(Direction.UP);
-                    break;
-                case 'ArrowDown':
-                case 'KeyS':
-                    player?.setDirection(Direction.DOWN);
-                    break;
-                case 'ArrowLeft':
-                case 'KeyA':
-                    player?.setDirection(Direction.LEFT);
-                    break;
-                case 'ArrowRight':
-                case 'KeyD':
-                    player?.setDirection(Direction.RIGHT);
-                    break;
+        e.x += e.vx; e.y += e.vy;
+        e.x = Math.max(0.5, Math.min(GRID_W - 1.5, e.x));
+        e.y = Math.max(0.5, Math.min(GRID_H - 1.5, e.y));
+        
+        const ex = Math.floor(e.x), ey = Math.floor(e.y);
+        if (getCell(ex, ey) === Cell.TRAIL || (ex === player.x && ey === player.y)) {
+            state = GameState.GAME_OVER; return;
+        }
+    }
+}
+
+function draw(): void {
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, CONFIG.CANVAS_WIDTH, CONFIG.CANVAS_HEIGHT);
+    
+    for (let y = 0; y < GRID_H; y++) {
+        for (let x = 0; x < GRID_W; x++) {
+            const c = getCell(x, y);
+            if (c === Cell.SAFE) {
+                ctx.fillStyle = '#444';
+                ctx.fillRect(x * CONFIG.GRID_SIZE, y * CONFIG.GRID_SIZE, CONFIG.GRID_SIZE, CONFIG.GRID_SIZE);
+            } else if (c === Cell.TRAIL) {
+                ctx.fillStyle = '#ff0';
+                ctx.fillRect(x * CONFIG.GRID_SIZE, y * CONFIG.GRID_SIZE, CONFIG.GRID_SIZE, CONFIG.GRID_SIZE);
             }
         }
-    });
-});
+    }
+    
+    ctx.fillStyle = '#0f0';
+    ctx.fillRect(player.x * CONFIG.GRID_SIZE, player.y * CONFIG.GRID_SIZE, CONFIG.GRID_SIZE, CONFIG.GRID_SIZE);
+    
+    ctx.fillStyle = '#f00';
+    for (const e of enemies) {
+        ctx.beginPath();
+        ctx.arc(e.x * CONFIG.GRID_SIZE + CONFIG.GRID_SIZE/2, e.y * CONFIG.GRID_SIZE + CONFIG.GRID_SIZE/2, CONFIG.GRID_SIZE, 0, Math.PI * 2);
+        ctx.fill();
+    }
+    
+    ctx.fillStyle = '#fff';
+    ctx.font = '16px monospace';
+    ctx.fillText(`Захвачено: ${capturedPercent}%`, 10, 20);
+    ctx.fillText(`Цель: ${CONFIG.TARGET_CAPTURE_PERCENT}%`, 10, 40);
+}
 
-export { GameEngine, GameState, CellType, Direction, CONFIG, GRID_WIDTH, GRID_HEIGHT };
+function handleKey(e: KeyboardEvent): void {
+    if (state === GameState.MENU || state === GameState.GAME_OVER || state === GameState.VICTORY) return;
+    
+    if (e.code === 'Space' || e.code === 'Escape') {
+        state = state === GameState.PLAYING ? GameState.PAUSED : GameState.PLAYING;
+        return;
+    }
+    
+    if (state !== GameState.PLAYING) return;
+    
+    switch (e.code) {
+        case 'ArrowUp': case 'KeyW': nextDir = Dir.UP; break;
+        case 'ArrowDown': case 'KeyS': nextDir = Dir.DOWN; break;
+        case 'ArrowLeft': case 'KeyA': nextDir = Dir.LEFT; break;
+        case 'ArrowRight': case 'KeyD': nextDir = Dir.RIGHT; break;
+    }
+}
+
+function gameLoop(): void {
+    if (state === GameState.PLAYING) { updatePlayer(); updateEnemies(); }
+    if (state !== GameState.MENU) draw();
+    requestAnimationFrame(gameLoop);
+}
+
+function showScreen(id: string): void {
+    document.querySelectorAll('.screen').forEach(el => (el as HTMLElement).style.display = 'none');
+    const s = document.getElementById(id);
+    if (s) s.style.display = 'flex';
+}
+
+function setupUI(): void {
+    document.getElementById('btn-easy')?.addEventListener('click', () => { difficultySetting = CONFIG.DIFFICULTY.EASY; initGame(); showScreen('game-screen'); });
+    document.getElementById('btn-medium')?.addEventListener('click', () => { difficultySetting = CONFIG.DIFFICULTY.MEDIUM; initGame(); showScreen('game-screen'); });
+    document.getElementById('btn-hard')?.addEventListener('click', () => { difficultySetting = CONFIG.DIFFICULTY.HARD; initGame(); showScreen('game-screen'); });
+    document.getElementById('btn-restart-gameover')?.addEventListener('click', () => { initGame(); showScreen('game-screen'); });
+    document.getElementById('btn-restart-victory')?.addEventListener('click', () => { initGame(); showScreen('game-screen'); });
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+    canvas = document.getElementById('game-canvas') as HTMLCanvasElement;
+    ctx = canvas.getContext('2d')!;
+    canvas.width = CONFIG.CANVAS_WIDTH;
+    canvas.height = CONFIG.CANVAS_HEIGHT;
+    setupUI();
+    window.addEventListener('keydown', handleKey);
+    showScreen('menu-screen');
+    gameLoop();
+});
