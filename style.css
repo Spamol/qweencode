@@ -1,0 +1,154 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Courier New', monospace;
+    background-color: #1a1a2e;
+    color: #eee;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+}
+
+#game-container {
+    position: relative;
+    width: 800px;
+    height: 600px;
+}
+
+.screen {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    display: none;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+}
+
+.screen.active {
+    display: flex;
+}
+
+/* Главное меню */
+#main-menu h1 {
+    font-size: 4rem;
+    color: #00ff00;
+    text-shadow: 0 0 10px #00ff00;
+    margin-bottom: 2rem;
+}
+
+#main-menu button,
+#game-over-screen button,
+#victory-screen button {
+    padding: 1rem 2rem;
+    font-size: 1.2rem;
+    background-color: #00ff00;
+    color: #1a1a2e;
+    border: none;
+    cursor: pointer;
+    margin: 0.5rem;
+    font-family: inherit;
+    font-weight: bold;
+    transition: all 0.3s;
+}
+
+#main-menu button:hover,
+#game-over-screen button:hover,
+#victory-screen button:hover {
+    background-color: #00cc00;
+    transform: scale(1.05);
+}
+
+.difficulty-select {
+    margin-top: 1.5rem;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.difficulty-select label {
+    font-size: 1.2rem;
+}
+
+.difficulty-select select {
+    padding: 0.5rem;
+    font-size: 1rem;
+    font-family: inherit;
+    background-color: #16213e;
+    color: #eee;
+    border: 2px solid #00ff00;
+}
+
+/* Игровой экран */
+#game-screen {
+    background-color: #000;
+}
+
+#game-canvas {
+    border: 2px solid #00ff00;
+}
+
+#hud {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    right: 10px;
+    display: flex;
+    justify-content: space-between;
+    padding: 0.5rem 1rem;
+    background-color: rgba(0, 0, 0, 0.7);
+    border: 1px solid #00ff00;
+    font-size: 1.2rem;
+}
+
+.overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.8);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+}
+
+.overlay.hidden {
+    display: none;
+}
+
+#pause-overlay h2 {
+    font-size: 3rem;
+    color: #ffff00;
+    margin-bottom: 1rem;
+}
+
+/* Game Over и Победа */
+#game-over-screen h1,
+#victory-screen h1 {
+    font-size: 3rem;
+    margin-bottom: 1rem;
+}
+
+#game-over-screen h1 {
+    color: #ff0000;
+    text-shadow: 0 0 10px #ff0000;
+}
+
+#victory-screen h1 {
+    color: #00ff00;
+    text-shadow: 0 0 10px #00ff00;
+}
+
+#final-score {
+    font-size: 1.5rem;
+    margin-bottom: 2rem;
+}
