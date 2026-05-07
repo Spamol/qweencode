@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Xonix Web Game</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="game-container">
+        <!-- Главное меню -->
+        <div id="main-menu" class="screen active">
+            <h1>XONIX</h1>
+            <button id="start-btn">Старт</button>
+            <div class="difficulty-select">
+                <label>Сложность:</label>
+                <select id="difficulty">
+                    <option value="easy">Легко (2 врага)</option>
+                    <option value="medium" selected>Средне (4 врага)</option>
+                    <option value="hard">Сложно (6 врагов)</option>
+                </select>
+            </div>
+        </div>
+
+        <!-- Игровой экран -->
+        <div id="game-screen" class="screen">
+            <canvas id="game-canvas"></canvas>
+            <div id="hud">
+                <span id="score-display">Захват: 0%</span>
+                <span id="target-display">Цель: 80%</span>
+            </div>
+            <div id="pause-overlay" class="overlay hidden">
+                <h2>ПАУЗА</h2>
+                <p>Нажмите Пробел или Esc для продолжения</p>
+            </div>
+        </div>
+
+        <!-- Экран Game Over -->
+        <div id="game-over-screen" class="screen">
+            <h1>GAME OVER</h1>
+            <p id="final-score">Захвачено: 0%</p>
+            <button id="restart-btn">Рестарт</button>
+        </div>
+
+        <!-- Экран Победы -->
+        <div id="victory-screen" class="screen">
+            <h1>ПОБЕДА!</h1>
+            <p>Территория захвачена!</p>
+            <button id="next-level-btn">Следующий уровень</button>
+        </div>
+    </div>
+
+    <script type="module" src="/main.ts"></script>
+</body>
+</html>
